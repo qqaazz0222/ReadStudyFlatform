@@ -453,9 +453,9 @@ def create_ui():
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            width: 100vw;
-            height: 100vh;
-            max-height: 100vh;
+            width: 100svw;
+            height: 100svh;
+            max-height: 100svh;
             padding: 0;
             margin: 0;
         }
@@ -476,10 +476,14 @@ def create_ui():
             width: 100%;
             height: 3.5rem;
         }
+        .error-msg {
+            padding: 0 0.75rem;
+        }
+            
         .viewer-container {
-            width: 100vw;
-            height: 100vh;
-            max-height: 100vh;
+            width: 100svw;
+            height: 100svh;
+            max-height: 100svh;
             padding: 0;
             margin: 0;
             gap: 0 !important;
@@ -491,8 +495,8 @@ def create_ui():
         /* 환자 목록 사이드바 스타일 */
         .patient-sidebar {
             height: 100%;
-            min-height: calc(100vh - 4.225rem);
-            max-height: calc(100vh - 4.225rem);
+            min-height: calc(100svh - 4.225rem);
+            max-height: calc(100svh - 4.225rem);
             border-right: 1px solid #e5e7eb;
             padding: 1rem;
             gap: .5rem !important;
@@ -596,7 +600,7 @@ def create_ui():
         .image-display-container {
             flex-grow: 0 !important;
             height: min-content;
-            max-height: calc(100vh - 23rem);
+            max-height: calc(100svh - 23rem);
             padding: 1rem;
             border-top: 1px solid #e5e7eb;
             border-bottom: 1px solid #e5e7eb;
@@ -702,9 +706,6 @@ def create_ui():
             padding: 0 !important;
             margin: 0 !important;
             height: 100%;
-            min-height: calc(100vh - 4rem);
-            max-height: calc(100vh - 4rem);
-
         }
         
         h3, p {
@@ -716,14 +717,14 @@ def create_ui():
         }
         
         .gradio-container {
-            min-width: 100vw !important;
-            min-height: 100vh !important;
+            min-width: 100svw !important;
+            min-height: 100svh !important;
             padding: 0 !important;
             margin: 0 !important;
         }
         
         html, body {
-            max-height: 100vh;
+            max-height: 100svh;
             overflow: hidden;
         }
         """
@@ -737,24 +738,24 @@ def create_ui():
                     affiliation_input = gr.Textbox(
                         label="소속",
                         placeholder="예: 강동경희대병원 호흡기알레르기내과",
-                        value="동국대학교",
+                        # value="동국대학교",
                         max_lines=1
                     )
                     name_input = gr.Textbox(
                         label="성함",
                         placeholder="예: 홍길동",
-                        value="김현수",
+                        # value="김현수",
                         max_lines=1
                     )
                     password_input = gr.Textbox(
                         label="비밀번호",
                         type="password",
                         placeholder="비밀번호를 입력하세요",
-                        value="plassct-gen"
+                        # value="dgu-plass-ct"
                     )
-                    
-                    error_msg = gr.Markdown("", visible=True)
-                    
+
+                    error_msg = gr.Markdown("", elem_classes="error-msg", visible=True)
+
                     login_btn = gr.Button("접속", variant="primary", size="lg", elem_classes="login-btn")
             
         # 뷰어 페이지
