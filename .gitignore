@@ -1,0 +1,47 @@
+# 환경 변수
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Conda 환경
+envs/
+.conda/
+
+# 구 venv (사용하지 않음)
+venv/
+env/
+ENV/
+.venv
+
+# 데이터베이스
+database/
+*.db
+*.sqlite
+*.sqlite3
+
+# CT 데이터
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+temp/
+tmp/
