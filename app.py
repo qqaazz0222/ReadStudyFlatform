@@ -212,7 +212,8 @@ async def handle_patient_select(patient_display: str):
             gr.update(value=40.0),
             gr.update(value=400.0),
             gr.update(value=None),
-            ""
+            "",
+            gr.update(interactive=False)  # 제출 버튼 비활성화
         )
     
     # 환자 ID 추출 (상태 아이콘 제거)
@@ -229,7 +230,8 @@ async def handle_patient_select(patient_display: str):
             gr.update(),
             gr.update(),
             gr.update(value=None),
-            ""
+            "",
+            gr.update(interactive=False)  # 제출 버튼 비활성화
         )
     
     # 상태 업데이트
@@ -244,9 +246,11 @@ async def handle_patient_select(patient_display: str):
     if result_data:
         result_value = result_data["result"]
         result_info = f"최종 제출: {result_data['updated_at']}"
+        submit_btn_state = gr.update(interactive=True)  # 기존 결과가 있으면 버튼 활성화
     else:
         result_value = None
         result_info = ""
+        submit_btn_state = gr.update(interactive=False)  # 결과 없으면 버튼 비활성화
     
     # 첫 슬라이스 이미지 데이터 생성
     base64_data = ct_processor.get_slice_as_base64(
@@ -271,7 +275,8 @@ async def handle_patient_select(patient_display: str):
         gr.update(value=app_state.window_level),
         gr.update(value=app_state.window_width),
         gr.update(value=result_value),
-        result_info
+        result_info,
+        submit_btn_state  # 제출 버튼 상태
     )
 
 
@@ -393,16 +398,22 @@ def apply_window_preset(preset_name: str):
     )
 
 
+def handle_result_radio_change(result: str):
+    """분석 결과 라디오 버튼 변경 처리"""
+    # 선택된 값이 있으면 버튼 활성화, 없으면 비활성화
+    return gr.update(interactive=result is not None)
+
+
 async def submit_analysis_result(result: str):
     """분석 결과 제출"""
     if not session.is_authenticated():
-        return "로그인이 필요합니다.", gr.update()
+        return "로그인이 필요합니다.", gr.update(), ""
     
     if app_state.current_patient_id is None:
-        return "환자를 먼저 선택해주세요.", gr.update()
+        return "환자를 먼저 선택해주세요.", gr.update(), ""
     
     if result is None:
-        return "결과를 선택해주세요.", gr.update()
+        return "결과를 선택해주세요.", gr.update(), ""
     
     # 결과 저장
     inspector_id = session.get_inspector_id()
@@ -1038,7 +1049,7 @@ def create_ui():
                                 value=None,
                                 container=False
                             )
-                            submit_btn = gr.Button("결과 제출", variant="primary", size="sm", elem_classes="submit-btn" )
+                            submit_btn = gr.Button("결과 제출", variant="primary", size="sm", elem_classes="submit-btn", interactive=False)
 
                     submit_msg = gr.Markdown("좌측 환자 목록에서 환자를 선택한 후 결과를 제출하세요.", elem_classes="text-box")
 
@@ -1143,8 +1154,16 @@ def create_ui():
                 submit_msg,
                 slice_slider, slice_number,
                 level_slider, width_slider,
-                result_radio, result_info_text
+                result_radio, result_info_text,
+                submit_btn  # 제출 버튼 상태 추가
             ]
+        )
+        
+        # 결과 라디오 변경 시 제출 버튼 활성화/비활성화
+        result_radio.change(
+            fn=handle_result_radio_change,
+            inputs=[result_radio],
+            outputs=[submit_btn]
         )
         
         # 슬라이스 조절
