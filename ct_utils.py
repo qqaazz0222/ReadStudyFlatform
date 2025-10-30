@@ -5,8 +5,7 @@ Numpy 파일 로딩, HU값 윈도우 조절, 슬라이스 추출 기능
 import numpy as np
 from pathlib import Path
 from typing import Tuple, List, Optional
-from PIL import Image
-import io
+import base64
 from config import config
 
 
@@ -102,14 +101,14 @@ class CTImageProcessor:
         
         return windowed
     
-    def get_slice_as_pil(
+    def get_slice_as_base64(
         self,
         slice_idx: int,
         window_level: float = 40.0,
         window_width: float = 400.0
-    ) -> Optional[Image.Image]:
+    ) -> Optional[str]:
         """
-        특정 슬라이스를 PIL Image로 반환
+        특정 슬라이스를 Base64 인코딩된 RGB 바이너리 데이터로 반환
         
         Args:
             slice_idx: 슬라이스 인덱스
@@ -117,14 +116,22 @@ class CTImageProcessor:
             window_width: 윈도우 너비 (HU)
             
         Returns:
-            PIL Image 객체
+            Base64 인코딩된 RGB 이미지 데이터 (또는 None)
         """
         slice_array = self.get_slice(slice_idx, window_level, window_width)
         
         if slice_array is None:
             return None
         
-        return Image.fromarray(slice_array, mode='L')
+        # 그레이스케일을 RGB로 변환 (각 픽셀을 3번 반복)
+        # shape: (height, width) -> (height, width, 3)
+        rgb_array = np.stack([slice_array, slice_array, slice_array], axis=-1)
+        
+        # C-contiguous 형태로 변환 후 바이트로 변환
+        rgb_bytes = np.ascontiguousarray(rgb_array).tobytes('C')
+        
+        # Base64 인코딩
+        return base64.b64encode(rgb_bytes).decode('utf-8')
     
     def get_volume_info(self) -> Optional[dict]:
         """

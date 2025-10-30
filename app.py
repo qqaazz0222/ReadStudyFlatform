@@ -6,7 +6,7 @@ import gradio as gr
 import asyncio
 from typing import Optional, List, Tuple
 import numpy as np
-from PIL import Image
+import inspect
 
 from auth import validate_inspector_info, session
 from database import db
@@ -28,10 +28,119 @@ app_state = AppState()
 
 
 # 유틸리티 함수
-def create_placeholder_image():
-    """플레이스홀더 이미지 생성 (검정색 배경)"""
-    img = Image.new('L', (512, 512), color=0)  # 0 = 검정색
-    return img
+def create_safe_html(value: str = "", **kwargs):
+    """
+    Gradio 버전 호환을 위한 HTML 컴포넌트 생성 래퍼
+    sanitize_html 파라미터가 지원되지 않는 버전에서 자동으로 제거
+    """
+    try:
+        sig = inspect.signature(gr.HTML.__init__)
+        if "sanitize_html" not in sig.parameters:
+            kwargs.pop("sanitize_html", None)
+    except Exception:
+        # 시그니처 조회 실패 시 보수적으로 제거
+        kwargs.pop("sanitize_html", None)
+    return gr.HTML(value=value, **kwargs)
+
+
+def create_canvas_html(base64_data: str = None, width: int = 512, height: int = 512) -> str:
+    """
+    클라이언트 사이드 렌더링을 위한 Canvas HTML 생성
+    
+    Args:
+        base64_data: Base64로 인코딩된 이미지 데이터
+        width: 이미지 너비
+        height: 이미지 높이
+        
+    Returns:
+        Canvas HTML 문자열
+    """
+    # Base64를 안전하게 전달하기 위해 별도 script 태그에 담는다.
+    # '</script>' 시퀀스로 스크립트가 조기 종료되지 않도록 '<\/'로 치환.
+    data_text = base64_data.replace('</', '<\/') if base64_data else ''
+    
+    return f'''
+    <div id="ct-canvas-container" style="display: flex; justify-content: center; background-color: #000; width: 100%; height: 100%;">
+        <canvas id="ct-canvas" 
+                width="{width}"
+                height="{height}"
+                data-original-width="{width}" 
+                data-original-height="{height}"
+                style="max-width: 100%; max-height: 100%; object-fit: contain; image-rendering: pixelated;">
+        </canvas>
+        <!-- 대용량 Base64는 속성에 넣지 않고 별도 스크립트 태그에 안전하게 보관 -->
+        <script id="ct-data" type="application/octet-stream">{data_text}</script>
+    </div>
+    <script>
+        (function() {{
+            const container = document.getElementById('ct-canvas-container');
+            const canvas = document.getElementById('ct-canvas');
+            if (!canvas || !container) {{
+                console.error('Canvas or container not found');
+                return;
+            }}
+            
+            const originalWidth = parseInt(canvas.getAttribute('data-original-width')) || {width};
+            const originalHeight = parseInt(canvas.getAttribute('data-original-height')) || {height};
+            const dataEl = document.getElementById('ct-data');
+            const imageData = dataEl ? (dataEl.textContent || '').trim() : '';
+            
+            if (!imageData) {{
+                console.log('No image data');
+                canvas.width = originalWidth;
+                canvas.height = originalHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#000000';
+                ctx.fillRect(0, 0, originalWidth, originalHeight);
+                return;
+            }}
+            
+            // Canvas의 실제 해상도는 원본 크기로 설정 (고해상도 유지)
+            canvas.width = originalWidth;
+            canvas.height = originalHeight;
+            
+            const ctx = canvas.getContext('2d');
+            
+            try {{
+                // Base64 디코딩
+                const binaryString = atob(imageData);
+                const len = binaryString.length;
+                const bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) {{
+                    bytes[i] = binaryString.charCodeAt(i);
+                }}
+                
+                const expectedLen = originalWidth * originalHeight * 3;  // RGB 형식
+                console.log('Decoded', len, 'bytes for', originalWidth, 'x', originalHeight, 'image');
+                
+                if (len !== expectedLen) {{
+                    console.error('Data length mismatch! Got', len, 'expected', expectedLen);
+                }}
+                
+                // ImageData 생성 (RGBA 형식)
+                const imgData = ctx.createImageData(originalWidth, originalHeight);
+                
+                // RGB 데이터를 RGBA로 변환
+                let rgbIdx = 0;
+                for (let i = 0; i < originalWidth * originalHeight; i++) {{
+                    const rgbaIdx = i * 4;
+                    imgData.data[rgbaIdx] = bytes[rgbIdx];         // R
+                    imgData.data[rgbaIdx + 1] = bytes[rgbIdx + 1]; // G
+                    imgData.data[rgbaIdx + 2] = bytes[rgbIdx + 2]; // B
+                    imgData.data[rgbaIdx + 3] = 255;               // A
+                    rgbIdx += 3;
+                }}
+                
+                // Canvas에 그리기
+                ctx.putImageData(imgData, 0, 0);
+                console.log('Image rendered successfully');
+            }} catch (e) {{
+                console.error('Canvas rendering error:', e);
+                console.error('Error stack:', e.stack);
+            }}
+        }})();
+    </script>
+    '''
 
 
 # 이벤트 핸들러 함수들
@@ -96,7 +205,7 @@ async def handle_patient_select(patient_display: str):
     """환자 선택 처리"""
     if not patient_display:
         return (
-            create_placeholder_image(),
+            create_canvas_html(),
             "좌측 사이드바에서 환자를 선택해주세요.",
             gr.update(value=0, maximum=0),
             0,
@@ -113,7 +222,7 @@ async def handle_patient_select(patient_display: str):
     success = ct_processor.load_volume(patient_id)
     if not success:
         return (
-            create_placeholder_image(),
+            create_canvas_html(),
             f"환자 데이터를 로드할 수 없습니다: {patient_id}",
             gr.update(),
             0,
@@ -139,17 +248,23 @@ async def handle_patient_select(patient_display: str):
         result_value = None
         result_info = ""
     
-    # 첫 슬라이스 이미지 생성
-    pil_image = ct_processor.get_slice_as_pil(
+    # 첫 슬라이스 이미지 데이터 생성
+    base64_data = ct_processor.get_slice_as_base64(
         app_state.current_slice_idx,
         app_state.window_level,
         app_state.window_width
     )
     
+    canvas_html = create_canvas_html(
+        base64_data,
+        ct_processor.shape[2],  # width
+        ct_processor.shape[1]   # height
+    )
+    
     info_text = f"**환자 ID:** {patient_id}, **슬라이스 수:** {app_state.num_slices}"
     
     return (
-        pil_image,
+        canvas_html,
         info_text,
         gr.update(value=app_state.current_slice_idx, maximum=app_state.num_slices - 1, minimum=0),
         app_state.current_slice_idx,
@@ -163,86 +278,116 @@ async def handle_patient_select(patient_display: str):
 def update_slice_from_slider(slice_idx: int):
     """슬라이더에서 슬라이스 업데이트"""
     if app_state.current_patient_id is None:
-        return create_placeholder_image(), slice_idx
+        return create_canvas_html(), slice_idx
     
     app_state.current_slice_idx = slice_idx
     
-    pil_image = ct_processor.get_slice_as_pil(
+    base64_data = ct_processor.get_slice_as_base64(
         slice_idx,
         app_state.window_level,
         app_state.window_width
     )
     
-    return pil_image, slice_idx
+    canvas_html = create_canvas_html(
+        base64_data,
+        ct_processor.shape[2],
+        ct_processor.shape[1]
+    )
+    
+    return canvas_html, slice_idx
 
 
 def update_slice_from_number(slice_num: int):
     """숫자 입력에서 슬라이스 업데이트"""
     if app_state.current_patient_id is None:
-        return create_placeholder_image(), gr.update(), 0
+        return create_canvas_html(), gr.update(), 0
     
     # 범위 체크
     slice_num = max(0, min(slice_num, app_state.num_slices - 1))
     app_state.current_slice_idx = slice_num
     
-    pil_image = ct_processor.get_slice_as_pil(
+    base64_data = ct_processor.get_slice_as_base64(
         slice_num,
         app_state.window_level,
         app_state.window_width
     )
     
-    return pil_image, gr.update(value=slice_num), slice_num
+    canvas_html = create_canvas_html(
+        base64_data,
+        ct_processor.shape[2],
+        ct_processor.shape[1]
+    )
+    
+    return canvas_html, gr.update(value=slice_num), slice_num
 
 
 def update_window_level(level: float):
     """윈도우 레벨 업데이트"""
     if app_state.current_patient_id is None:
-        return create_placeholder_image(), level
+        return create_canvas_html(), level
     
     app_state.window_level = level
     
-    pil_image = ct_processor.get_slice_as_pil(
+    base64_data = ct_processor.get_slice_as_base64(
         app_state.current_slice_idx,
         level,
         app_state.window_width
     )
     
-    return pil_image, level
+    canvas_html = create_canvas_html(
+        base64_data,
+        ct_processor.shape[2],
+        ct_processor.shape[1]
+    )
+    
+    return canvas_html, level
 
 
 def update_window_width(width: float):
     """윈도우 너비 업데이트"""
     if app_state.current_patient_id is None:
-        return create_placeholder_image(), width
+        return create_canvas_html(), width
     
     app_state.window_width = width
     
-    pil_image = ct_processor.get_slice_as_pil(
+    base64_data = ct_processor.get_slice_as_base64(
         app_state.current_slice_idx,
         app_state.window_level,
         width
     )
     
-    return pil_image, width
+    canvas_html = create_canvas_html(
+        base64_data,
+        ct_processor.shape[2],
+        ct_processor.shape[1]
+    )
+    
+    return canvas_html, width
 
 
 def apply_window_preset(preset_name: str):
     """윈도우 프리셋 적용"""
     if app_state.current_patient_id is None or preset_name not in WINDOW_PRESETS:
-        return create_placeholder_image(), gr.update(), gr.update()
+        return create_canvas_html(), gr.update(), gr.update()
     
     preset = WINDOW_PRESETS[preset_name]
     app_state.window_level = preset["level"]
     app_state.window_width = preset["width"]
     
-    pil_image = ct_processor.get_slice_as_pil(
+    base64_data = ct_processor.get_slice_as_base64(
         app_state.current_slice_idx,
         app_state.window_level,
         app_state.window_width
     )
     
+    canvas_html = create_canvas_html(
+        base64_data,
+        ct_processor.shape[2],
+        ct_processor.shape[1]
+    )
+    
     return (
-        pil_image,
+        canvas_html,
         gr.update(value=app_state.window_level),
         gr.update(value=app_state.window_width)
     )
@@ -344,6 +489,51 @@ def create_ui():
                 const imageContainer = document.querySelector('.image-display-container');
                 if (!imageContainer) return;
                 
+                // 렌더링 함수: HTML 컴포넌트에 삽입된 script#ct-data로부터 Base64를 읽어 캔버스에 그리기
+                const renderFromHtmlComponent = () => {
+                    try {
+                        const canvas = imageContainer.querySelector('#ct-canvas');
+                        const dataEl = imageContainer.querySelector('#ct-data');
+                        if (!canvas || !dataEl) return;
+                        const width = parseInt(canvas.getAttribute('data-original-width')) || canvas.width || 512;
+                        const height = parseInt(canvas.getAttribute('data-original-height')) || canvas.height || 512;
+                        const imageData = (dataEl.textContent || '').trim();
+                        if (!imageData) return;
+
+                        const ctx = canvas.getContext('2d');
+                        const binaryString = atob(imageData);
+                        const len = binaryString.length;
+                        const bytes = new Uint8Array(len);
+                        for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
+                        const expectedLen = width * height * 3; // RGB
+                        if (len !== expectedLen) {
+                            console.warn('[CT] RGB length mismatch', { len, expectedLen, width, height });
+                        }
+                        const imgData = ctx.createImageData(width, height);
+                        let rgbIdx = 0;
+                        for (let i = 0; i < width * height && rgbIdx + 2 < bytes.length; i++) {
+                            const rgbaIdx = i * 4;
+                            imgData.data[rgbaIdx] = bytes[rgbIdx];
+                            imgData.data[rgbaIdx + 1] = bytes[rgbIdx + 1];
+                            imgData.data[rgbaIdx + 2] = bytes[rgbIdx + 2];
+                            imgData.data[rgbaIdx + 3] = 255;
+                            rgbIdx += 3;
+                        }
+                        ctx.putImageData(imgData, 0, 0);
+                    } catch (e) {
+                        console.error('[CT] Render error', e);
+                    }
+                };
+
+                // 최초 시도
+                renderFromHtmlComponent();
+
+                // 이미지 영역 변경 감지하여 렌더
+                const observer = new MutationObserver(() => {
+                    renderFromHtmlComponent();
+                });
+                observer.observe(imageContainer, { childList: true, subtree: true, characterData: true });
+
                 let isRightMouseDown = false;
                 let startX = 0;
                 let startY = 0;
@@ -599,7 +789,7 @@ def create_ui():
         
         .image-display-container {
             flex-grow: 0 !important;
-            height: min-content;
+            height: calc(100svh - 23rem);
             max-height: calc(100svh - 23rem);
             padding: 1rem;
             border-top: 1px solid #e5e7eb;
@@ -612,20 +802,22 @@ def create_ui():
         
         /* CT 이미지 배경 검정색 설정 */
         .image-display {
+            padding: 1rem;
             height: 100%;
-            max-height: 64rem;
+            background-color: #000 !important;
+            display: flex !important;
+            justify-content: center !important;
+            align-items: center !important;
+        }
+        .image-display > div {
+            width: 100%;
+            height: 100%;
             background-color: #000 !important;
         }
-        .image-display img {
-            background-color: #000 !important;
-        }
-        .image-display .image-container {
-            background-color: #000 !important;
-        }
-        /* Gradio Image 컴포넌트의 모든 배경을 검정색으로 */
-        .image-display > div,
-        .image-display .block,
-        .image-display .wrap {
+        #ct-canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
             background-color: #000 !important;
         }
         .result-submission-container {
@@ -724,6 +916,8 @@ def create_ui():
         }
         
         html, body {
+            min-width: 1024px;
+            min-hegiht: 924px;
             max-height: 100svh;
             overflow: hidden;
         }
@@ -738,20 +932,20 @@ def create_ui():
                     affiliation_input = gr.Textbox(
                         label="소속",
                         placeholder="예: 강동경희대병원 호흡기알레르기내과",
-                        # value="동국대학교",
+                        value="동국대학교",
                         max_lines=1
                     )
                     name_input = gr.Textbox(
                         label="성함",
                         placeholder="예: 홍길동",
-                        # value="김현수",
+                        value="김현수",
                         max_lines=1
                     )
                     password_input = gr.Textbox(
                         label="비밀번호",
                         type="password",
                         placeholder="비밀번호를 입력하세요",
-                        # value="dgu-plass-ct"
+                        value="dgu-plass-ct"
                     )
 
                     error_msg = gr.Markdown("", elem_classes="error-msg", visible=True)
@@ -802,16 +996,13 @@ def create_ui():
 
                     # 영상 표시부
                     with gr.Column(elem_classes="image-display-container"):
-                        ct_image = gr.Image(
+                        # Canvas를 포함한 HTML 컴포넌트
+                        ct_image = create_safe_html(
+                            value='<canvas id="ct-canvas" width="512" height="512" style="background-color: #000;"></canvas>',
                             elem_classes="image-display",
-                            value=create_placeholder_image(),
-                            type="pil",
                             label="",
                             show_label=False,
-                            interactive=False,
-                            show_download_button=False,
-                            container=False,
-                            height="auto"
+                            sanitize_html=False
                         )
                     
                     # 조절부
