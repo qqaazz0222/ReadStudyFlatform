@@ -540,6 +540,24 @@ def create_ui():
                 let startLevel = 40;
                 let startWidth = 400;
                 
+                // WL/WW 표시용 툴팁 생성
+                const tooltip = document.createElement('div');
+                tooltip.id = 'wl-ww-tooltip';
+                tooltip.style.cssText = `
+                    position: fixed;
+                    background-color: rgba(0, 0, 0, 0.8);
+                    color: white;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    font-size: 14px;
+                    font-family: monospace;
+                    pointer-events: none;
+                    z-index: 10000;
+                    display: none;
+                    white-space: nowrap;
+                `;
+                document.body.appendChild(tooltip);
+                
                 // 우클릭 메뉴 방지
                 imageContainer.addEventListener('contextmenu', (e) => {
                     e.preventDefault();
@@ -559,6 +577,13 @@ def create_ui():
                         if (widthSlider) startWidth = parseFloat(widthSlider.value);
                         
                         imageContainer.style.cursor = 'crosshair';
+                        
+                        // 툴팁 표시
+                        tooltip.style.display = 'block';
+                        tooltip.style.left = (e.clientX + 15) + 'px';
+                        tooltip.style.top = (e.clientY + 15) + 'px';
+                        tooltip.textContent = `WL: ${Math.round(startLevel)} / WW: ${Math.round(startWidth)}`;
+                        
                         e.preventDefault();
                     }
                 });
@@ -587,6 +612,11 @@ def create_ui():
                             widthSlider.dispatchEvent(new Event('change', { bubbles: true }));
                         }
                         
+                        // 툴팁 위치 및 내용 업데이트
+                        tooltip.style.left = (e.clientX + 15) + 'px';
+                        tooltip.style.top = (e.clientY + 15) + 'px';
+                        tooltip.textContent = `WL: ${Math.round(newLevel)} / WW: ${Math.round(newWidth)}`;
+                        
                         e.preventDefault();
                     }
                 });
@@ -596,6 +626,9 @@ def create_ui():
                     if (isRightMouseDown) {
                         isRightMouseDown = false;
                         imageContainer.style.cursor = 'default';
+                        
+                        // 툴팁 숨김
+                        tooltip.style.display = 'none';
                         
                         // release 이벤트 트리거
                         const levelSlider = document.querySelector('input[type="range"][aria-label*="윈도우 레벨"]');
@@ -699,6 +732,11 @@ def create_ui():
             flex-shrink: 0 !important;
         }
         
+        .patient-sidebar > fieldset {
+            border-width: 1px !important;
+            border: 1px solid #d1d5db !important;
+            border-radius: 0.375rem !important;
+        }
         /* 스크롤바 스타일 */
         .patient-sidebar::-webkit-scrollbar {
             width: 8px;
@@ -745,8 +783,6 @@ def create_ui():
             height: 100% !important;
             max-height: 100% !important;
             background-color: #ffffff !important;
-            border: 1px solid #d1d5db;
-            border-radius: 0.375rem;
             gap: 0 !important;
             overflow-y: auto !important;
             overflow-x: hidden !important;
