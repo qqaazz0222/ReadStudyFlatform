@@ -805,9 +805,11 @@ def create_ui():
             padding: 1rem;
             height: 100%;
             background-color: #000 !important;
+            border-radius: 0.375rem !important;
             display: flex !important;
             justify-content: center !important;
             align-items: center !important;
+            overflow: hidden !important;
         }
         .image-display > div {
             width: 100%;
@@ -920,6 +922,16 @@ def create_ui():
             min-hegiht: 924px;
             max-height: 100svh;
             overflow: hidden;
+        }
+        
+        /* CT 이미지 업데이트 시 로딩 애니메이션 및 딤드 비활성화 */
+        .image-display > div.wrap.center.full {
+            display: none !important;
+        }
+        
+        /* HTML 컴포넌트 업데이트 시 딤드 효과 제거 */
+        .image-display > div.pending {
+            opacity: 1 !important;
         }
         """
     ) as app:        
