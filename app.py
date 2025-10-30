@@ -7,6 +7,7 @@ import asyncio
 from typing import Optional, List, Tuple
 import numpy as np
 import inspect
+import os
 
 from auth import validate_inspector_info, session
 from database import db
@@ -978,20 +979,17 @@ def create_ui():
                     affiliation_input = gr.Textbox(
                         label="소속",
                         placeholder="예: 강동경희대병원 호흡기알레르기내과",
-                        value="동국대학교",
                         max_lines=1
                     )
                     name_input = gr.Textbox(
                         label="성함",
                         placeholder="예: 홍길동",
-                        value="김현수",
                         max_lines=1
                     )
                     password_input = gr.Textbox(
                         label="비밀번호",
                         type="password",
                         placeholder="비밀번호를 입력하세요",
-                        value="dgu-plass-ct"
                     )
 
                     error_msg = gr.Markdown("", elem_classes="error-msg", visible=True)
@@ -1219,5 +1217,6 @@ if __name__ == "__main__":
     app.launch(
         server_name=config.HOST,
         server_port=config.PORT,
+        favicon_path=os.path.join(os.path.dirname(__file__), 'favicon.png'),
         share=False
     )
