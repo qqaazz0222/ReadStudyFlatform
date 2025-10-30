@@ -283,7 +283,7 @@ async def handle_patient_select(patient_display: str):
 def update_slice_from_slider(slice_idx: int):
     """슬라이더에서 슬라이스 업데이트"""
     if app_state.current_patient_id is None:
-        return create_canvas_html(), slice_idx
+        return create_canvas_html()
     
     app_state.current_slice_idx = slice_idx
     
@@ -299,7 +299,7 @@ def update_slice_from_slider(slice_idx: int):
         ct_processor.shape[1]
     )
     
-    return canvas_html, slice_idx
+    return canvas_html
 
 
 def update_slice_from_number(slice_num: int):
@@ -329,7 +329,7 @@ def update_slice_from_number(slice_num: int):
 def update_window_level(level: float):
     """윈도우 레벨 업데이트"""
     if app_state.current_patient_id is None:
-        return create_canvas_html(), level
+        return create_canvas_html()
     
     app_state.window_level = level
     
@@ -345,13 +345,13 @@ def update_window_level(level: float):
         ct_processor.shape[1]
     )
     
-    return canvas_html, level
+    return canvas_html
 
 
 def update_window_width(width: float):
     """윈도우 너비 업데이트"""
     if app_state.current_patient_id is None:
-        return create_canvas_html(), width
+        return create_canvas_html()
     
     app_state.window_width = width
     
@@ -367,7 +367,7 @@ def update_window_width(width: float):
         ct_processor.shape[1]
     )
     
-    return canvas_html, width
+    return canvas_html
 
 
 def apply_window_preset(preset_name: str):
@@ -611,7 +611,6 @@ def create_ui():
                         if (levelSlider && Math.abs(deltaX) > 2) {
                             levelSlider.value = newLevel;
                             levelSlider.dispatchEvent(new Event('input', { bubbles: true }));
-                            levelSlider.dispatchEvent(new Event('change', { bubbles: true }));
                         }
                         
                         // 윈도우 너비 조절 (상/하 드래그) - 위로 드래그하면 증가
@@ -620,7 +619,6 @@ def create_ui():
                         if (widthSlider && Math.abs(deltaY) > 2) {
                             widthSlider.value = newWidth;
                             widthSlider.dispatchEvent(new Event('input', { bubbles: true }));
-                            widthSlider.dispatchEvent(new Event('change', { bubbles: true }));
                         }
                         
                         // 툴팁 위치 및 내용 업데이트
@@ -640,16 +638,6 @@ def create_ui():
                         
                         // 툴팁 숨김
                         tooltip.style.display = 'none';
-                        
-                        // release 이벤트 트리거
-                        const levelSlider = document.querySelector('input[type="range"][aria-label*="윈도우 레벨"]');
-                        const widthSlider = document.querySelector('input[type="range"][aria-label*="윈도우 너비"]');
-                        if (levelSlider) {
-                            levelSlider.dispatchEvent(new Event('change', { bubbles: true }));
-                        }
-                        if (widthSlider) {
-                            widthSlider.dispatchEvent(new Event('change', { bubbles: true }));
-                        }
                     }
                 };
                 
@@ -674,7 +662,6 @@ def create_ui():
                     if (newValue !== currentValue) {
                         sliceSlider.value = newValue;
                         sliceSlider.dispatchEvent(new Event('input', { bubbles: true }));
-                        sliceSlider.dispatchEvent(new Event('change', { bubbles: true }));
                     }
                 }, { passive: false });
                 
@@ -1167,14 +1154,14 @@ def create_ui():
         )
         
         # 슬라이스 조절
-        # change 이벤트: 즉시 반영 (휠 제스처 지원)
-        slice_slider.change(
+        # input 이벤트: 즉시 반영 (휠 제스처 및 드래그 최적화)
+        slice_slider.input(
             fn=update_slice_from_slider,
             inputs=[slice_slider],
-            outputs=[ct_image, slice_number]
+            outputs=[ct_image]
         )
         
-        # 숫자 입력은 change 이벤트 사용 (즉시 반영)
+        # 숫자 입력은 submit 이벤트 사용
         slice_number.submit(
             fn=update_slice_from_number,
             inputs=[slice_number],
@@ -1182,33 +1169,33 @@ def create_ui():
         )
         
         # 윈도우 레벨 조절
-        # change 이벤트: 즉시 반영 (드래그 중에도 업데이트)
-        level_slider.change(
+        # input 이벤트: 드래그 중에도 즉시 업데이트
+        level_slider.input(
             fn=update_window_level,
             inputs=[level_slider],
-            outputs=[ct_image, level_number]
+            outputs=[ct_image]
         )
         
-        # 숫자 입력은 submit 이벤트 사용 (엔터키 또는 포커스 아웃)
+        # 숫자 입력은 submit 이벤트 사용
         level_number.submit(
             fn=update_window_level,
             inputs=[level_number],
-            outputs=[ct_image, level_slider]
+            outputs=[ct_image]
         )
         
         # 윈도우 너비 조절
-        # change 이벤트: 즉시 반영 (드래그 중에도 업데이트)
-        width_slider.change(
+        # input 이벤트: 드래그 중에도 즉시 업데이트
+        width_slider.input(
             fn=update_window_width,
             inputs=[width_slider],
-            outputs=[ct_image, width_number]
+            outputs=[ct_image]
         )
         
-        # 숫자 입력은 submit 이벤트 사용 (엔터키 또는 포커스 아웃)
+        # 숫자 입력은 submit 이벤트 사용
         width_number.submit(
             fn=update_window_width,
             inputs=[width_number],
-            outputs=[ct_image, width_slider]
+            outputs=[ct_image]
         )
         
         # 결과 제출
