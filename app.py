@@ -8,10 +8,75 @@ from typing import Optional, List, Tuple
 import numpy as np
 import inspect
 import os
+import csv
 
 from auth import validate_inspector_info, session
 from database import db
 from ct_utils import ct_processor, get_patient_list, WINDOW_PRESETS
+
+REAL_NAME_FLAG = False  # 실제 이름 사용 여부 플래그
+
+
+# 익명화 매핑 로드
+def load_anonymization_mapping():
+    """anonymization_mapping.csv 파일을 읽어서 딕셔너리로 반환"""
+    mapping = {}
+    csv_path = os.path.join(os.path.dirname(__file__), 'data', 'anonymization_mapping.csv')
+    
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) >= 4:
+                    # row[0]: original/generated
+                    # row[1]: hospital
+                    # row[2]: real patient ID
+                    # row[3]: anonymized patient ID
+                    anonymized_id = row[3].strip()
+                    real_id = row[2].strip()
+                    data_type = 'O' if row[0].strip().lower() == 'original' else 'G'
+                    mapping[anonymized_id] = {
+                        'real_id': real_id,
+                        'type': data_type,
+                        'hospital': row[1].strip()
+                    }
+    except Exception as e:
+        print(f"Warning: Could not load anonymization mapping: {e}")
+    
+    return mapping
+
+# 매핑 데이터 로드
+anonymization_mapping = load_anonymization_mapping()
+
+
+def get_anonymized_id_from_display(display_text: str) -> str:
+    """
+    표시된 텍스트에서 익명화된 환자 ID를 추출
+    
+    Args:
+        display_text: "[분석됨] O_00000102-1542-11-06" 형식의 텍스트
+        
+    Returns:
+        익명화된 환자 ID (예: "bae243ec")
+    """
+    # "[분석됨]" 또는 "[분석전]" 제거
+    text_without_status = display_text.split(" ", 1)[1]
+    
+    # REAL_NAME_FLAG가 True이고 O_ 또는 G_ 접두사가 있으면
+    if REAL_NAME_FLAG and (text_without_status.startswith("O_") or text_without_status.startswith("G_")):
+        # "O_" 또는 "G_" 제거
+        real_id = text_without_status[2:]
+        
+        # 역매핑: real_id -> anonymized_id
+        for anonymized_id, data in anonymization_mapping.items():
+            if data['real_id'] == real_id:
+                return anonymized_id
+        
+        # 매핑을 찾지 못한 경우 원본 텍스트 반환
+        return text_without_status
+    else:
+        # REAL_NAME_FLAG가 False이거나 접두사가 없으면 그대로 반환
+        return text_without_status
 
 
 # 전역 상태 관리
@@ -173,7 +238,17 @@ async def handle_login(affiliation: str, name: str, password: str):
     patient_choices = []
     for patient_id in patient_list:
         status_icon = "[분석됨]" if patient_id in submitted_set else "[분석전]"
-        patient_choices.append(f"{status_icon} {patient_id}")
+        
+        # REAL_NAME_FLAG가 True이면 실제 환자 ID 표시
+        if REAL_NAME_FLAG and patient_id in anonymization_mapping:
+            mapping_data = anonymization_mapping[patient_id]
+            type_prefix = f"{mapping_data['type']}_"  # O_ 또는 G_
+            real_id = mapping_data['real_id']
+            display_text = f"{status_icon} {type_prefix}{real_id}"
+        else:
+            display_text = f"{status_icon} {patient_id}"
+        
+        patient_choices.append(display_text)
     
     inspector_info = f"**검사자:** {affiliation} - {name}"
     
@@ -217,8 +292,8 @@ async def handle_patient_select(patient_display: str):
             gr.update(interactive=False)  # 제출 버튼 비활성화
         )
     
-    # 환자 ID 추출 (상태 아이콘 제거)
-    patient_id = patient_display.split(" ", 1)[1]
+    # 환자 ID 추출 (상태 아이콘 제거 및 익명화 ID 변환)
+    patient_id = get_anonymized_id_from_display(patient_display)
     
     # 볼륨 로드
     success = ct_processor.load_volume(patient_id)
@@ -434,7 +509,16 @@ async def submit_analysis_result(result: str):
         current_selection = None
         for patient_id in patient_list:
             status_icon = "[분석됨]" if patient_id in submitted_set else "[분석전]"
-            display = f"{status_icon} {patient_id}"
+            
+            # REAL_NAME_FLAG가 True이면 실제 환자 ID 표시
+            if REAL_NAME_FLAG and patient_id in anonymization_mapping:
+                mapping_data = anonymization_mapping[patient_id]
+                type_prefix = f"{mapping_data['type']}_"  # O_ 또는 G_
+                real_id = mapping_data['real_id']
+                display = f"{status_icon} {type_prefix}{real_id}"
+            else:
+                display = f"{status_icon} {patient_id}"
+            
             patient_choices.append(display)
             if patient_id == app_state.current_patient_id:
                 current_selection = display
@@ -496,8 +580,398 @@ def create_ui():
                 window.matchMedia('(prefers-color-scheme: dark)').matches = false;
             }
             
+            // 키보드 단축키 설정
+            document.addEventListener('keydown', (e) => {
+                // 입력 필드에 포커스가 있을 때는 단축키 무시
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                    return;
+                }
+                
+                const sliceSlider = document.querySelector('input[type="range"][aria-label*="슬라이스"]');
+                const levelSlider = document.querySelector('input[type="range"][aria-label*="윈도우 레벨"]');
+                const widthSlider = document.querySelector('input[type="range"][aria-label*="윈도우 너비"]');
+                
+                let handled = false;
+                
+                if (e.ctrlKey || e.metaKey) {
+                    // Ctrl + Shift +  화살표: WL/WW 조절 (10 단위)
+                    if (e.shiftKey) {
+                        // Ctrl + Shift + 위: WL 증가 (10 단위)
+                        if (e.key === 'ArrowUp' && levelSlider) {
+                            const currentValue = parseFloat(levelSlider.value);
+                            const maxValue = parseFloat(levelSlider.max);
+                            const newValue = Math.min(maxValue, currentValue + 10);
+                            if (newValue !== currentValue) {
+                                levelSlider.value = newValue;
+                                levelSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        } else if (e.key === 'ArrowDown' && levelSlider) {
+                            // Ctrl + Shift + 아래: WL 감소 (10 단위)
+                            const currentValue = parseFloat(levelSlider.value);
+                            const minValue = parseFloat(levelSlider.min);
+                            const newValue = Math.max(minValue, currentValue - 10);
+                            if (newValue !== currentValue) {
+                                levelSlider.value = newValue;
+                                levelSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        } else if (e.key === 'ArrowRight' && widthSlider) {
+                            // Ctrl + Shift + 오른쪽: WW 증가 (10 단위)
+                            const currentValue = parseFloat(widthSlider.value);
+                            const maxValue = parseFloat(widthSlider.max);
+                            const newValue = Math.min(maxValue, currentValue + 10);
+                            if (newValue !== currentValue) {
+                                widthSlider.value = newValue;
+                                widthSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        } else if (e.key === 'ArrowLeft' && widthSlider) {
+                            // Ctrl + Shift + 왼쪽: WW 감소 (10 단위)
+                            const currentValue = parseFloat(widthSlider.value);
+                            const minValue = parseFloat(widthSlider.min);
+                            const newValue = Math.max(minValue, currentValue - 10);
+                            if (newValue !== currentValue) {
+                                widthSlider.value = newValue;
+                                widthSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        }
+                    } else {
+                        // Ctrl + 화살표: WL/WW 조절 (1 단위)
+                        if (e.key === 'ArrowUp' && levelSlider) {
+                            // Ctrl + 위: WL 증가
+                            const currentValue = parseFloat(levelSlider.value);
+                            const maxValue = parseFloat(levelSlider.max);
+                            const newValue = Math.min(maxValue, currentValue + 1);
+                            if (newValue !== currentValue) {
+                                levelSlider.value = newValue;
+                                levelSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        } else if (e.key === 'ArrowDown' && levelSlider) {
+                            // Ctrl + 아래: WL 감소
+                            const currentValue = parseFloat(levelSlider.value);
+                            const minValue = parseFloat(levelSlider.min);
+                            const newValue = Math.max(minValue, currentValue - 1);
+                            if (newValue !== currentValue) {
+                                levelSlider.value = newValue;
+                                levelSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        } else if (e.key === 'ArrowRight' && widthSlider) {
+                            // Ctrl + Shift + 오른쪽: WW 증가
+                            const currentValue = parseFloat(widthSlider.value);
+                            const maxValue = parseFloat(widthSlider.max);
+                            const newValue = Math.min(maxValue, currentValue + 1);
+                            console.log(maxValue, currentValue, newValue);
+                            if (newValue !== currentValue) {
+                                widthSlider.value = newValue;
+                                widthSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        } else if (e.key === 'ArrowLeft' && widthSlider) {
+                            // Ctrl + Shift + 왼쪽: WW 감소
+                            const currentValue = parseFloat(widthSlider.value);
+                            const minValue = parseFloat(widthSlider.min);
+                            const newValue = Math.max(minValue, currentValue - 1);
+                            console.log(minValue, currentValue, newValue);
+                            if (newValue !== currentValue) {
+                                widthSlider.value = newValue;
+                                widthSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        }
+                    }
+                } else {
+                    // Shift + 화살표: 슬라이스 조절(10단위)
+                    if (e.shiftKey) {
+                        if ((e.key === 'ArrowUp' || e.key === 'ArrowRight') && sliceSlider) {
+                            // 위/오른쪽: 슬라이스 증가
+                            const currentValue = parseInt(sliceSlider.value);
+                            const maxValue = parseInt(sliceSlider.max);
+                            const newValue = Math.min(maxValue, currentValue + 10);
+                            if (newValue !== currentValue) {
+                                sliceSlider.value = newValue;
+                                sliceSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        } else if ((e.key === 'ArrowDown' || e.key === 'ArrowLeft') && sliceSlider) {
+                            // 아래/왼쪽: 슬라이스 감소
+                            const currentValue = parseInt(sliceSlider.value);
+                            const minValue = parseInt(sliceSlider.min);
+                            const newValue = Math.max(minValue, currentValue - 10);
+                            if (newValue !== currentValue) {
+                                sliceSlider.value = newValue;
+                                sliceSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        }
+                    } else {
+                        // 화살표만: 슬라이스 조절(1단위)
+                        if ((e.key === 'ArrowUp' || e.key === 'ArrowRight') && sliceSlider) {
+                            // 위/오른쪽: 슬라이스 증가
+                            const currentValue = parseInt(sliceSlider.value);
+                            const maxValue = parseInt(sliceSlider.max);
+                            const newValue = Math.min(maxValue, currentValue + 1);
+                            if (newValue !== currentValue) {
+                                sliceSlider.value = newValue;
+                                sliceSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        } else if ((e.key === 'ArrowDown' || e.key === 'ArrowLeft') && sliceSlider) {
+                            // 아래/왼쪽: 슬라이스 감소
+                            const currentValue = parseInt(sliceSlider.value);
+                            const minValue = parseInt(sliceSlider.min);
+                            const newValue = Math.max(minValue, currentValue - 1);
+                            if (newValue !== currentValue) {
+                                sliceSlider.value = newValue;
+                                sliceSlider.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            handled = true;
+                        }
+                    }
+                }
+                
+                if (handled) {
+                    e.preventDefault();
+                }
+            });
+            
             // CT 이미지 제스처 컨트롤 설정
             setTimeout(() => {
+                // 도움말 플로팅 버튼 생성
+                const helpButton = document.createElement('button');
+                helpButton.id = 'help-floating-button';
+                helpButton.innerHTML = '?';
+                helpButton.style.cssText = `
+                    position: fixed;
+                    bottom: 0.75rem;
+                    right: 0.75rem;
+                    width: 2.75rem;
+                    height: 2.75rem;
+                    border-radius: 50%;
+                    background-color: #ea580c;
+                    color: white;
+                    border: none;
+                    font-size: 1.25rem;
+                    font-weight: bold;
+                    cursor: pointer;
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1), 0 2px 4px rgba(0, 0, 0, 0.06);
+                    z-index: 9999;
+                    transition: all 0.2s ease;
+                `;
+                document.body.appendChild(helpButton);
+                
+                // 호버 효과
+                helpButton.addEventListener('mouseenter', () => {
+                    helpButton.style.backgroundColor = '#c2410c';
+                    helpButton.style.transform = 'scale(1.1)';
+                });
+                helpButton.addEventListener('mouseleave', () => {
+                    helpButton.style.backgroundColor = '#ea580c';
+                    helpButton.style.transform = 'scale(1)';
+                });
+                
+                // 도움말 모달 생성
+                const helpModal = document.createElement('div');
+                helpModal.id = 'help-modal';
+                helpModal.style.cssText = `
+                    display: none;
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background-color: rgba(0, 0, 0, 0.5);
+                    z-index: 10000;
+                    justify-content: center;
+                    align-items: center;
+                `;
+                
+                helpModal.innerHTML = `
+                    <div style="
+                        background-color: white;
+                        border-radius: 0.5rem;
+                        padding: 2rem;
+                        width: calc(100% - 2rem);
+                        max-width: 600px;
+                        max-height: 80vh;
+                        overflow-y: auto;
+                        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+                    ">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                            <h2 style="margin: 0; font-size: 1.5rem; font-weight: bold; color: #292524;">키보드 단축키 안내</h2>
+                            <button id="close-help-modal" style="
+                                background: none;
+                                border: none;
+                                font-size: 1.5rem;
+                                cursor: pointer;
+                                color: #78716c;
+                                width: 2rem;
+                                height: 2rem;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                border-radius: 0.25rem;
+                            ">×</button>
+                        </div>
+                        
+                        <div style="space-y: 1.5rem;">
+                            <section>
+                                <h3 style="font-size: 1.125rem; font-weight: 600; color: #44403c; margin-bottom: 0.75rem;">슬라이스 조절</h3>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e; width: 40%;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">↑</kbd> 또는 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">→</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">슬라이스 1단계 증가</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">↓</kbd> 또는 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">←</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">슬라이스 1단계 감소</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Shift</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">↑/→</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">슬라이스 10단계 증가</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Shift</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">↓/←</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">슬라이스 10단계 감소</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">마우스 휠</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">슬라이스 변경</td>
+                                    </tr>
+                                </table>
+                            </section>
+                            
+                            <section style="margin-top: 1.5rem;">
+                                <h3 style="font-size: 1.125rem; font-weight: 600; color: #44403c; margin-bottom: 0.75rem;">Window Level (WL) 조절</h3>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e; width: 40%;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Ctrl</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">↑</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">WL 1단계 증가</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Ctrl</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">↓</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">WL 1단계 감소</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Ctrl</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Shift</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">↑</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">WL 10단계 증가</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Ctrl</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Shift</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">↓</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">WL 10단계 감소</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">우클릭</kbd> + 
+                                            좌/우 드래그
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">WL 조절</td>
+                                    </tr>
+                                </table>
+                            </section>
+                            
+                            <section style="margin-top: 1.5rem;">
+                                <h3 style="font-size: 1.125rem; font-weight: 600; color: #44403c; margin-bottom: 0.75rem;">Window Width (WW) 조절</h3>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e; width: 40%;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Ctrl</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">→</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">WW 1단계 증가</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Ctrl</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">←</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">WW 1단계 감소</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Ctrl</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Shift</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">→</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">WW 10단계 증가</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid #e7e5e4;">
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Ctrl</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">Shift</kbd> + 
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">←</kbd>
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">WW 10단계 감소</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 0.5rem; color: #57534e;">
+                                            <kbd style="background-color: #f5f5f4; padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #d6d3d1; font-family: monospace;">우클릭</kbd> + 
+                                            상/하 드래그
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #292524;">WW 조절</td>
+                                    </tr>
+                                </table>
+                            </section>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(helpModal);
+                
+                // 모달 열기/닫기 이벤트
+                helpButton.addEventListener('click', () => {
+                    helpModal.style.display = 'flex';
+                });
+                
+                const closeModalButton = document.getElementById('close-help-modal');
+                closeModalButton.addEventListener('click', () => {
+                    helpModal.style.display = 'none';
+                });
+                
+                // 모달 배경 클릭 시 닫기
+                helpModal.addEventListener('click', (e) => {
+                    if (e.target === helpModal) {
+                        helpModal.style.display = 'none';
+                    }
+                });
+                
+                // ESC 키로 모달 닫기
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape' && helpModal.style.display === 'flex') {
+                        helpModal.style.display = 'none';
+                    }
+                });
+                
                 const imageContainer = document.querySelector('.image-display-container');
                 if (!imageContainer) return;
                 
@@ -543,6 +1017,19 @@ def create_ui():
                 // 이미지 영역 변경 감지하여 렌더
                 const observer = new MutationObserver(() => {
                     renderFromHtmlComponent();
+                    
+                    // 새 이미지가 렌더링되면 canvas에 포커스 이동
+                    const canvas = imageContainer.querySelector('#ct-canvas');
+                    if (canvas) {
+                        // tabindex를 설정하여 포커스 가능하게 만들기
+                        if (!canvas.hasAttribute('tabindex')) {
+                            canvas.setAttribute('tabindex', '0');
+                        }
+                        // 포커스 이동 (약간의 지연을 두어 렌더링 완료 후 실행)
+                        setTimeout(() => {
+                            canvas.focus();
+                        }, 100);
+                    }
                 });
                 observer.observe(imageContainer, { childList: true, subtree: true, characterData: true });
 
@@ -856,6 +1343,7 @@ def create_ui():
             max-height: 100%;
             object-fit: contain;
             background-color: #000 !important;
+            outline: none !important; /* 포커스 시 외곽선 제거 */
         }
         .result-submission-container {
             display: flex;
@@ -1114,6 +1602,23 @@ def create_ui():
         
         # 로그인
         login_btn.click(
+            fn=handle_login,
+            inputs=[affiliation_input, name_input, password_input],
+            outputs=[login_page, viewer_page, error_msg, patient_list, inspector_info]
+        )
+        
+        # 로그인 폼에서 엔터키로 로그인
+        affiliation_input.submit(
+            fn=handle_login,
+            inputs=[affiliation_input, name_input, password_input],
+            outputs=[login_page, viewer_page, error_msg, patient_list, inspector_info]
+        )
+        name_input.submit(
+            fn=handle_login,
+            inputs=[affiliation_input, name_input, password_input],
+            outputs=[login_page, viewer_page, error_msg, patient_list, inspector_info]
+        )
+        password_input.submit(
             fn=handle_login,
             inputs=[affiliation_input, name_input, password_input],
             outputs=[login_page, viewer_page, error_msg, patient_list, inspector_info]
